@@ -88,7 +88,6 @@ function bazel_path(workspace_root, filepath)
     while true do
         if plenary.path:new(current, "BUILD"):exists() or plenary.path:new(current, "BUILD.bazel"):exists() then
             build_dir = current:absolute()
-            log.error("build_dir is :" .. build_dir)
             break
         end
         
@@ -106,12 +105,10 @@ function bazel_path(workspace_root, filepath)
     -- make_relative returns a string
     local pkg = plenary.path:new(build_dir):make_relative(root)
     if pkg == "." then pkg = "" end -- Handle BUILD file at workspace root
-    log.error("pkg is :"..pkg)
 
     -- 3. Construct the Target part (from build_dir to the file)
     local target = plenary.path:new(filepath):make_relative(build_dir)
 
-    log.error("target is :"..target)
     -- 4. Combine into Bazel format: //package:target
     return string.format("//%s:%s", pkg, target)
 end
@@ -290,7 +287,6 @@ function M.buildTargets()
   local file = vim.api.nvim_buf_get_name(0)
   local bazel_root = find_bazel_root(file)
   local fpa_rel = bazel_path(bazel_root, file)
-  log.error(fpa_rel)
 
   local dir = plenary.path:new(file):parent()
   local exit,stdout,stderr  = runCommand(dir,string.format("bazel query 'rdeps(//..., %s)' --keep_going", fpa_rel))
