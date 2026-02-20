@@ -78,16 +78,17 @@ function find_bazel_root(filepath)
 end
 
 function bazel_path(workspace_root, filepath)
-    local p = Path:new(filepath)
-    local root = Path:new(workspace_root):absolute()
+    local p = plenary.path:new(filepath)
+    local root = plenary.path:new(workspace_root):absolute()
     
     local build_dir = nil
     local current = p:parent()
 
     -- 1. Walk up to find the nearest BUILD/BUILD.bazel file
     while true do
-        if Path:new(current, "BUILD"):exists() or Path:new(current, "BUILD.bazel"):exists() then
-            build_dir = current
+        if plenary.path:new(current, "BUILD"):exists() or plenary.path:new(current, "BUILD.bazel"):exists() then
+            build_dir = current:absolute()
+            log.error("build_dir is :" .. build_dir)
             break
         end
         
@@ -103,12 +104,14 @@ function bazel_path(workspace_root, filepath)
 
     -- 2. Construct the Package part (from root to build_dir)
     -- make_relative returns a string
-    local pkg = Path:new(build_dir):make_relative(root)
+    local pkg = plenary.path:new(build_dir):make_relative(root)
     if pkg == "." then pkg = "" end -- Handle BUILD file at workspace root
+    log.error("pkg is :"..pkg)
 
     -- 3. Construct the Target part (from build_dir to the file)
-    local target = Path:new(filepath):make_relative(build_dir:absolute())
+    local target = plenary.path:new(filepath):make_relative(build_dir)
 
+    log.error("target is :"..target)
     -- 4. Combine into Bazel format: //package:target
     return string.format("//%s:%s", pkg, target)
 end
@@ -149,7 +152,6 @@ function runCommand(dir, executeCommand)
     local handle = io.popen(fullCommand)
     local lastLine = handle:read("*a")
     -- Close the handle
-    handle:close()
 
     local read_and_delete = function(filename)
         local f = io.open(filename, "r")
@@ -185,7 +187,8 @@ end
 function M.runGazelle()
 
   -- always run from current file dir (since vim cmd might not always under workspace)
-  local dir = plenary.path:new(vim.api.nvim_buf_get_name(0)).parent()
+  local abs = plenary.path:new(vim.api.nvim_buf_get_name(0)):expand():absolute()
+  local dir = abs.parent()
   local exit, stdout, stderr = runCommand(dir, "bazel run //:gazelle")
   local dBuffer = ""
   local title = "Gazelle ran successfully"
@@ -198,7 +201,8 @@ function M.runGazelle()
 end
 
 function M.runGazelleUpdateRepos()
-  local dir = plenary.path:new(vim.api.nvim_buf_get_name(0)).parent()
+  local abs = plenary.path:new(vim.api.nvim_buf_get_name(0)):expand():absolute()
+  local dir = abs.parent()
   local exit, stdout, stderr = runCommand(dir, "bazel run //:gazelle-update-repos")
   local dBuffer = ""
   local title = "Gazelle update repos ran successfully"
@@ -212,8 +216,9 @@ end
 
 -- Get the test targets for the file in the current buffer.
 function M.getTestTargets()
-  local dir = plenary.path:new(vim.api.nvim_buf_get_name(0)).parent()
-  local fpa_rel = plenary.path:new(vim.api.nvim_buf_get_name(0)):make_relative()
+  local abs = plenary.path:new(vim.api.nvim_buf_get_name(0)):expand():absolute()
+  local dir = abs.parent()
+  local fpa_rel = abs.head()
   local exit, stdout, stderr = runCommand(dir, string.format("bazel query 'kind(test, rdeps(//..., %s))' --keep_going", fpa_rel))
   local dBuffer = ""
   local title = "Bazel targets"
@@ -227,8 +232,9 @@ end
 
 -- Get the build targets for the file in the current buffer.
 function M.getBuildTargets()
-  local dir = plenary.path:new(vim.api.nvim_buf_get_name(0)).parent()
-  local fpa_rel = plenary.path:new(vim.api.nvim_buf_get_name(0)):make_relative()
+  local abs = plenary.path:new(vim.api.nvim_buf_get_name(0)):expand():absolute()
+  local dir = abs.parent()
+  local fpa_rel = abs.head()
   local exit, stdout, stderr = runCommand(dir, string.format("bazel query 'rdeps(//..., %s)' --keep_going", fpa_rel))
   local dBuffer = ""
   local title = "Bazel targets"
@@ -242,8 +248,9 @@ end
 
 -- Run bazel test on the targets for the current file.
 function M.runTestTargets()
-  local dir = plenary.path:new(vim.api.nvim_buf_get_name(0)).parent()
-  local fpa_rel = plenary.path:new(vim.api.nvim_buf_get_name(0)):make_relative()
+  local abs = plenary.path:new(vim.api.nvim_buf_get_name(0)):expand():absolute()
+  local dir = abs.parent()
+  local fpa_rel = abs.head()
   local exit, targets, stderr  = runCommand(dir, string.format("bazel query 'kind(test, rdeps(//..., %s))' --keep_going", fpa_rel))
   if exit > 0 then
     log.error(buildError("Bazel failed",  targets , stderr))
@@ -280,12 +287,15 @@ end
 
 -- Build all dependencies for the current file.
 function M.buildTargets()
+  local file = vim.api.nvim_buf_get_name(0)
+  local bazel_root = find_bazel_root(file)
+  local fpa_rel = bazel_path(bazel_root, file)
+  log.error(fpa_rel)
 
-  local dir = plenary.path:new(vim.api.nvim_buf_get_name(0)).parent()
-  local fpa_rel = plenary.path:new(vim.api.nvim_buf_get_name(0)):make_relative()
-  local exit,targets,stderr  = runCommand(dir,string.format("bazel query 'rdeps(//..., %s)' --keep_going", file_bazel_path))
+  local dir = plenary.path:new(file):parent()
+  local exit,stdout,stderr  = runCommand(dir,string.format("bazel query 'rdeps(//..., %s)' --keep_going", fpa_rel))
   if exit > 0 then
-    log.error(buildError("Bazel failed", targets, stderr))
+    log.error(buildError("Bazel failed", stdout, stderr))
     return
   end
 
@@ -307,12 +317,12 @@ function M.buildTargets()
   cmd[index] = 'build'
   index = index + 1
 
-  for _, v in ipairs(targets) do
+  for v in stdout:gmatch("[^\r\n]+") do
     cmd[index] = v
     index = index + 1
   end
 
-  vim.system(cmd, { text = true }, callback)
+  vim.system(cmd, {cwd= dir.filename ,text = true }, callback)
 end
 
 function M.setup()
